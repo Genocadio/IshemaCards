@@ -24,6 +24,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+        <head>
+        <title>Card Duel - Card Game</title>
+        <meta name="description" content="A 2-player card game built with Next.js" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
