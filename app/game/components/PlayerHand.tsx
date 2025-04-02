@@ -14,13 +14,15 @@ export default function PlayerHand() {
   };
 
   return (
-    <div className="bg-green-900 p-4 rounded-lg">
+    <div className="w-full max-w-full overflow-hidden bg-green-900 p-4 rounded-lg">
       <h3 className="text-xl font-bold mb-2">Your Hand ({playerHand.length} cards)</h3>
-      <Player
-        hand={playerHand}
-        onCardPlay={handleCardPlay}
-        isPlayerTurn={isPlayerTurn && !gameOver && !roundInProgress}
-      />
+      <div className="w-full overflow-hidden">
+        <Player
+          hand={playerHand}
+          onCardPlay={handleCardPlay}
+          isPlayerTurn={isPlayerTurn && !gameOver && !roundInProgress}
+        />
+      </div>
     </div>
   );
 } 

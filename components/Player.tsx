@@ -9,43 +9,47 @@ interface PlayerProps {
 }
 
 export default function Player({ hand, onCardPlay, isPlayerTurn }: PlayerProps) {
-  const [isMobile, setIsMobile] = useState(false);
+  const [showScrollIndicator, setShowScrollIndicator] = useState(false);
+  const containerRef = React.useRef<HTMLDivElement>(null);
 
-  // Check if device is mobile on mount and resize
+  // Check if content is scrollable
   useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth <= 768);
+    const checkScrollable = () => {
+      if (containerRef.current) {
+        const { scrollWidth, clientWidth } = containerRef.current;
+        setShowScrollIndicator(scrollWidth > clientWidth);
+      }
     };
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
+    checkScrollable();
+    window.addEventListener('resize', checkScrollable);
+    return () => window.removeEventListener('resize', checkScrollable);
+  }, [hand]);
 
   const handleCardClick = (card: Card, index: number) => {
     onCardPlay(card, index);
   };
 
-  if (isMobile) {
-    return (
-      <div className="relative w-full overflow-hidden">
-        <div className="flex justify-center items-center">
-          <div
-            className="flex items-center space-x-4 overflow-x-auto py-8 px-12"
-            style={{ 
-              WebkitOverflowScrolling: 'touch',
-              msOverflowStyle: 'none',
-              scrollbarWidth: 'none',
-              scrollSnapType: 'x mandatory',
-            }}
-          >
+  return (
+    <div className="relative w-full bg-green-900 p-4 rounded-lg">
+      <div className="w-full overflow-hidden">
+        <div
+          ref={containerRef}
+          className="w-full overflow-x-auto scrollbar-hide"
+          style={{
+            WebkitOverflowScrolling: 'touch',
+            msOverflowStyle: 'none',
+            scrollbarWidth: 'none',
+          }}
+        >
+          <div className="flex gap-4 min-w-max">
             {hand.map((card, index) => (
-              <div 
+              <div
                 key={`${card.suit}-${card.value}-${index}`}
-                className="flex-shrink-0 scroll-snap-align-center"
+                className="flex-shrink-0 w-[80px]"
                 onClick={() => handleCardClick(card, index)}
               >
-                <CardComponent 
-                  card={card} 
+                <CardComponent
+                  card={card}
                   onClick={() => {}}
                   isPlayable={isPlayerTurn}
                 />
@@ -54,23 +58,10 @@ export default function Player({ hand, onCardPlay, isPlayerTurn }: PlayerProps) 
           </div>
         </div>
       </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-wrap justify-center gap-4 p-4">
-      {hand.map((card, index) => (
-        <div 
-          key={`${card.suit}-${card.value}-${index}`}
-          onClick={() => handleCardClick(card, index)}
-        >
-          <CardComponent 
-            card={card} 
-            onClick={() => {}}
-            isPlayable={isPlayerTurn}
-          />
-        </div>
-      ))}
+  
+      {showScrollIndicator && (
+        <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-transparent via-green-500 to-transparent opacity-50" />
+      )}
     </div>
   );
 }

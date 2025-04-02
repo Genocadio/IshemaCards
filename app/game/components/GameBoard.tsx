@@ -118,8 +118,8 @@ export default function GameBoard() {
   };
 
   return (
-    <div className="min-h-screen bg-green-800 text-white p-4">
-      <div className="max-w-4xl mx-auto">
+    <div className="min-h-screen bg-green-800 text-white p-4 overflow-x-hidden">
+      <div className="max-w-4xl mx-auto w-full">
         <h1 className="text-3xl font-bold text-center mb-6">Ishema Cards</h1>
 
         {showGameStartInfo ? (
@@ -147,7 +147,7 @@ export default function GameBoard() {
             </button>
           </div>
         ) : (
-          <div className="space-y-6">
+          <div className="space-y-6 w-full">
             <div className="flex flex-wrap justify-between items-center bg-green-900 p-3 rounded-lg gap-2">
               <div className="flex items-center">
                 <h2 className="text-base sm:text-lg font-semibold mr-2">Trump:</h2>
@@ -283,7 +283,9 @@ export default function GameBoard() {
                 )}
               </div>
 
-              <PlayerHand />
+              <div className="w-full overflow-hidden">
+                <PlayerHand />
+              </div>
             </div>
           </div>
         )}
