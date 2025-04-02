@@ -21,7 +21,7 @@ export default function Card({ card, onClick, isPlayable = true }: CardProps) {
       onClick={isPlayable ? onClick : undefined}
     >
       <Image
-        src={`/cards/${suitLower}/${value}.jpg`}
+        src={`/cards/${suitLower}/${value}.webp`}
         alt={`${value} of ${suit}`}
         fill
         style={{ objectFit: 'cover' }}
