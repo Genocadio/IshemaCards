@@ -257,7 +257,7 @@ export const resolveRoundThunk = createAsyncThunk(
         if (tieMode) {
           dispatch(setPlayerTurn(state.game.lastRoundWinner === 'ai'));
         } else {
-          dispatch(setPlayerTurn(winner === 'ai'));
+          dispatch(setPlayerTurn(winner === 'player'));
         }
 
         dispatch(setCurrentRoundFirstPlayer(null));
