@@ -36,8 +36,8 @@ export function shuffleDeck(deck: Card[]): Card[] {
 }
 
 // Determine card value for comparison
-export function getCardValue(card: Card): number {
-  const valueMap: { [key: string]: number } = {
+export function getCardValue(card: Card, trumpSuit: Suit, includeTrumpBonus: boolean = false): number {
+  const baseValueMap: { [key: string]: number } = {
     'A': 11,
     '7': 10,
     'K': 4,
@@ -48,7 +48,9 @@ export function getCardValue(card: Card): number {
     '4': 0,
     '3': 0
   };
-  return valueMap[card.value] || 0;
+
+  const value = baseValueMap[card.value] ?? 0;
+  return includeTrumpBonus && card.suit === trumpSuit ? value + 20 : value;
 }
 
 // Determine winner of a round
@@ -62,8 +64,8 @@ export function determineRoundWinner(card1: Card, card2: Card, trumpSuit: Suit):
   }
   
   // If both or neither are trump, compare values using new value system
-  const value1 = getCardValue(card1);
-  const value2 = getCardValue(card2);
+  const value1 = getCardValue(card1, trumpSuit, true); // Include trump bonus for comparison
+  const value2 = getCardValue(card2, trumpSuit, true); // Include trump bonus for comparison
   
   // If both cards have non-zero values, compare them
   if (value1 > 0 && value2 > 0) {
@@ -84,129 +86,130 @@ export function determineRoundWinner(card1: Card, card2: Card, trumpSuit: Suit):
   
   // If both cards have zero value, compare their original values
   if (value1 === 0 && value2 === 0) {
-    const originalValue1 = VALUES.indexOf(card1.value);
-    const originalValue2 = VALUES.indexOf(card2.value);
+    // Define the order of zero-value cards (higher number = higher value)
+    const zeroValueOrder: { [key: string]: number } = {
+      '6': 4,
+      '5': 3,
+      '4': 2,
+      '3': 1
+    };
     
-    if (originalValue1 > originalValue2) {
+    const order1 = zeroValueOrder[card1.value] || 0;
+    const order2 = zeroValueOrder[card2.value] || 0;
+    
+    if (order1 > order2) {
       return 'player';
-    } else if (originalValue2 > originalValue1) {
+    } else if (order2 > order1) {
       return 'ai';
     }
   }
   
-  return 'tie'; // Should never happen in this game with unique cards
+  return 'tie'; // Should only happen if both cards are exactly the same
 }
 
-// AI logic for selecting a card
-export function getAIMove(aiHand: Card[], playerCard: Card | null, trumpSuit: Suit): Card {
-  // If player hasn't played a card yet, play the lowest non-trump card
+export type AIDifficulty = 'easy' | 'medium' | 'hard';
+
+// AI logic for selecting a card with difficulty levels
+export function getAIMove(aiHand: Card[], playerCard: Card | null, trumpSuit: Suit, difficulty: AIDifficulty = 'medium'): Card {
+  // Sort cards by value (lowest to highest) without trump bonus for initial sorting
+  const sorted = [...aiHand].sort((a, b) => 
+    getCardValue(a, trumpSuit, false) - getCardValue(b, trumpSuit, false)
+  );
+
   if (!playerCard) {
-    // Sort by value and prefer non-trump cards
-    const sortedHand = [...aiHand].sort((a, b) => {
-      // Prioritize non-trump cards
-      if (a.suit === trumpSuit && b.suit !== trumpSuit) return 1;
-      if (a.suit !== trumpSuit && b.suit === trumpSuit) return -1;
-      
-      // Then sort by value (lowest first)
-      const valueA = getCardValue(a);
-      const valueB = getCardValue(b);
-      
-      // If both have non-zero values, compare them
-      if (valueA > 0 && valueB > 0) {
-        return valueA - valueB;
+    // When going first, strategy varies by difficulty
+    switch (difficulty) {
+      case 'easy': {
+        // Easy: Always play lowest card
+        return sorted[0];
       }
       
-      // If one has zero value, it should be played first
-      if (valueA === 0 && valueB > 0) return -1;
-      if (valueB === 0 && valueA > 0) return 1;
-      
-      // If both have zero values, compare original values
-      if (valueA === 0 && valueB === 0) {
-        return VALUES.indexOf(a.value) - VALUES.indexOf(b.value);
+      case 'medium': {
+        // Medium: Prefer non-scoring cards but may play scoring cards
+        const nonScoring = sorted.filter(card => ['3', '4', '5', '6'].includes(card.value));
+        return nonScoring.length > 0 ? nonScoring[0] : sorted[0];
       }
       
-      return 0;
-    });
-    
-    return sortedHand[0];
+      case 'hard': {
+        // Hard: Strategic first move
+        const trumpCards = sorted.filter(c => c.suit === trumpSuit);
+        const nonScoring = sorted.filter(card => ['3', '4', '5', '6'].includes(card.value));
+        
+        // If we have high trump cards, save them
+        if (trumpCards.length > 0 && getCardValue(trumpCards[0], trumpSuit, false) > 0) {
+          // Play lowest non-scoring if available
+          if (nonScoring.length > 0) return nonScoring[0];
+          // Otherwise play lowest non-trump
+          const nonTrump = sorted.filter(c => c.suit !== trumpSuit);
+          return nonTrump.length > 0 ? nonTrump[0] : sorted[0];
+        }
+        
+        // If no high trump cards, play lowest non-scoring
+        return nonScoring.length > 0 ? nonScoring[0] : sorted[0];
+      }
+    }
   }
-  
-  // If player has played, try to win with the lowest card possible
-  const winningCards = aiHand.filter(card => {
-    // Trump beats non-trump
-    if (card.suit === trumpSuit && playerCard.suit !== trumpSuit) {
-      return true;
+
+  // When going second, try to win the round
+  const sameSuit = sorted.filter(c => c.suit === playerCard.suit);
+  const trumpCards = sorted.filter(c => c.suit === trumpSuit);
+  const playerValue = getCardValue(playerCard, trumpSuit, false);
+
+  switch (difficulty) {
+    case 'easy': {
+      // Easy: Basic strategy, just try to follow suit or play trump
+      if (sameSuit.length > 0) return sameSuit[0];
+      if (trumpCards.length > 0) return trumpCards[0];
+      return sorted[0];
     }
     
-    // Same suit, compare values
-    if (card.suit === playerCard.suit) {
-      const cardValue = getCardValue(card);
-      const playerValue = getCardValue(playerCard);
-      
-      // If both have non-zero values, compare them
-      if (cardValue > 0 && playerValue > 0) {
-        return cardValue > playerValue;
+    case 'medium': {
+      // Medium: Try to win with lowest possible card
+      for (const c of sameSuit) {
+        if (getCardValue(c, trumpSuit, false) > playerValue) {
+          return c;
+        }
       }
-      
-      // If one has zero value, non-zero wins
-      if (cardValue > 0 && playerValue === 0) {
-        return true;
+      if (trumpCards.length > 0 && playerCard.suit !== trumpSuit) {
+        return trumpCards[0];
       }
-      
-      // If both have zero values, compare original values
-      if (cardValue === 0 && playerValue === 0) {
-        return VALUES.indexOf(card.value) > VALUES.indexOf(playerCard.value);
-      }
+      const nonScoring = sorted.filter(card => ['3', '4', '5', '6'].includes(card.value));
+      return nonScoring.length > 0 ? nonScoring[0] : sorted[0];
     }
     
-    return false;
-  });
-  
-  if (winningCards.length > 0) {
-    // Sort winning cards by value (lowest first)
-    winningCards.sort((a, b) => {
-      const valueA = getCardValue(a);
-      const valueB = getCardValue(b);
-      
-      // If both have non-zero values, compare them
-      if (valueA > 0 && valueB > 0) {
-        return valueA - valueB;
+    case 'hard': {
+      // Hard: Advanced strategy
+      // 1. Try to win with lowest possible card of same suit
+      for (const c of sameSuit) {
+        if (getCardValue(c, trumpSuit, false) > playerValue) {
+          return c;
+        }
       }
       
-      // If one has zero value, it should be played first
-      if (valueA === 0 && valueB > 0) return -1;
-      if (valueB === 0 && valueA > 0) return 1;
-      
-      // If both have zero values, compare original values
-      if (valueA === 0 && valueB === 0) {
-        return VALUES.indexOf(a.value) - VALUES.indexOf(b.value);
+      // 2. If can't follow suit, consider trump strategy
+      if (trumpCards.length > 0) {
+        // If player played trump, only play higher trump
+        if (playerCard.suit === trumpSuit) {
+          for (const c of trumpCards) {
+            if (getCardValue(c, trumpSuit, false) > playerValue) {
+              return c;
+            }
+          }
+        } else {
+          // If player didn't play trump, use lowest trump
+          return trumpCards[0];
+        }
       }
       
-      return 0;
-    });
-    return winningCards[0];
+      // 3. If can't win, play lowest non-scoring card
+      const nonScoring = sorted.filter(card => ['3', '4', '5', '6'].includes(card.value));
+      if (nonScoring.length > 0) {
+        // In hard mode, prefer to keep higher non-scoring cards
+        return nonScoring[nonScoring.length - 1];
+      }
+      
+      // 4. As last resort, play lowest value card
+      return sorted[0];
+    }
   }
-  
-  // If can't win, play lowest value card
-  const sortedHand = [...aiHand].sort((a, b) => {
-    const valueA = getCardValue(a);
-    const valueB = getCardValue(b);
-    
-    // If both have non-zero values, compare them
-    if (valueA > 0 && valueB > 0) {
-      return valueA - valueB;
-    }
-    
-    // If one has zero value, it should be played first
-    if (valueA === 0 && valueB > 0) return -1;
-    if (valueB === 0 && valueA > 0) return 1;
-    
-    // If both have zero values, compare original values
-    if (valueA === 0 && valueB === 0) {
-      return VALUES.indexOf(a.value) - VALUES.indexOf(b.value);
-    }
-    
-    return 0;
-  });
-  return sortedHand[0];
 }

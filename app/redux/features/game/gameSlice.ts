@@ -1,6 +1,7 @@
 // redux/features/game/gameSlice.ts
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 import { Card, Suit, PlayerType } from '@/lib/types';
+import { AIDifficulty } from '@/lib/gameLogic';
 
 interface GameState {
   gameStarted: boolean;
@@ -25,6 +26,7 @@ interface GameState {
   showPostGameQuestion: boolean;
   showPlayerQuestionInput: boolean;
   showGameStartInfo: boolean;
+  difficulty: AIDifficulty;
 }
 
 const initialState: GameState = {
@@ -50,6 +52,7 @@ const initialState: GameState = {
   showPostGameQuestion: false,
   showPlayerQuestionInput: false,
   showGameStartInfo: false,
+  difficulty: 'medium',
 };
 
 // Define actions and reducers here
@@ -123,6 +126,9 @@ export const gameSlice = createSlice({
       state.showGameStartInfo = action.payload;
     },
     resetGame: () => initialState,
+    setDifficulty: (state, action: PayloadAction<AIDifficulty>) => {
+      state.difficulty = action.payload;
+    },
   },
 });
 
@@ -148,7 +154,8 @@ export const {
   setShowPostGameQuestion,
   setShowPlayerQuestionInput,
   setShowGameStartInfo,
-  resetGame 
+  resetGame,
+  setDifficulty
 } = gameSlice.actions;
 
 export default gameSlice.reducer;

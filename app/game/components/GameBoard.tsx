@@ -20,11 +20,13 @@ import CardComponent from '@/components/Card';
 import PlayerHand from '@/app/game/components/PlayerHand';
 import { CARDS_PER_PLAYER } from '@/lib/constants';
 import { Card } from '@/lib/types';
+import { AIDifficulty } from '@/lib/gameLogic';
 
 
 export default function GameBoard() {
   const dispatch = useDispatch<AppDispatch>();
   const [playerQuestion, setPlayerQuestion] = useState<string>('');
+  const [selectedDifficulty, setSelectedDifficulty] = useState<AIDifficulty>('medium');
   
   const { 
     gameStarted, 
@@ -62,7 +64,7 @@ export default function GameBoard() {
   }, [isPlayerTurn, gameStarted, gameOver, roundInProgress, dispatch]);
 
   const handleStartGame = () => {
-    dispatch(startGameThunk());
+    dispatch(startGameThunk({ difficulty: selectedDifficulty }));
   };
 
   const handleResetGame = () => {
@@ -139,6 +141,29 @@ export default function GameBoard() {
             <p className="text-center max-w-md">
               A 2-player card game with trumps. Play with cards 3-7, J, Q, K, A against the AI!
             </p>
+            <div className="w-full max-w-md">
+              <label className="block text-lg font-semibold mb-2">Select AI Difficulty:</label>
+              <div className="flex gap-4 justify-center">
+                <button
+                  className={`px-4 py-2 rounded ${selectedDifficulty === 'easy' ? 'bg-yellow-500 text-black' : 'bg-gray-700'}`}
+                  onClick={() => setSelectedDifficulty('easy')}
+                >
+                  Easy
+                </button>
+                <button
+                  className={`px-4 py-2 rounded ${selectedDifficulty === 'medium' ? 'bg-yellow-500 text-black' : 'bg-gray-700'}`}
+                  onClick={() => setSelectedDifficulty('medium')}
+                >
+                  Medium
+                </button>
+                <button
+                  className={`px-4 py-2 rounded ${selectedDifficulty === 'hard' ? 'bg-yellow-500 text-black' : 'bg-gray-700'}`}
+                  onClick={() => setSelectedDifficulty('hard')}
+                >
+                  Hard
+                </button>
+              </div>
+            </div>
             <button
               className="bg-yellow-500 hover:bg-yellow-600 text-black font-bold py-2 px-4 rounded"
               onClick={handleStartGame}

@@ -25,30 +25,19 @@ import {
   setShowGameStartInfo
 } from './gameSlice';
 import { setPlayerHand, setAIHand, setPlayerCard, setAICard, removeCardFromPlayerHand, removeCardFromAIHand } from '../player/playerSlice';
-import { createCustomDeck, shuffleDeck, determineRoundWinner, getAIMove } from '@/lib/gameLogic';
+import { createCustomDeck, shuffleDeck, determineRoundWinner, getAIMove, getCardValue, AIDifficulty } from '@/lib/gameLogic';
 import { SUITS, CARDS_PER_PLAYER } from '@/lib/constants';
 import { Card, Suit, PlayerType } from '@/lib/types';
 
 // Helper function to calculate card value
-const calculateCardValue = (card: Card): number => {
-  const valueMap: { [key: string]: number } = {
-    'A': 11,
-    '7': 10,
-    'K': 4,
-    'Q': 2,
-    'J': 3,
-    '6': 0,
-    '5': 0,
-    '4': 0,
-    '3': 0
-  };
-  return valueMap[card.value] || 0;
+const calculateCardValue = (card: Card, trumpSuit: Suit): number => {
+  return getCardValue(card, trumpSuit, false); // Don't include trump bonus for logging
 };
 
 // Start game thunk
 export const startGameThunk = createAsyncThunk(
   'game/startGameThunk',
-  async (_, { dispatch }) => {
+  async ({ difficulty = 'medium' }: { difficulty?: AIDifficulty }, { dispatch }) => {
     // Show game info panel
     dispatch(startGame());
     
@@ -60,9 +49,76 @@ export const startGameThunk = createAsyncThunk(
     dispatch(setTrumpSuit(randomSuit));
     dispatch(setTrumpCard({ suit: randomSuit, value: 'A' }));
     
-    // Deal cards
-    const playerCards = deck.slice(0, CARDS_PER_PLAYER);
-    const aiCards = deck.slice(CARDS_PER_PLAYER, CARDS_PER_PLAYER * 2);
+    // Deal cards based on difficulty
+    let playerCards: Card[] = [];
+    let aiCards: Card[] = [];
+    
+    // Sort deck by value (highest to lowest) and trump status
+    const sortedDeck = [...deck].sort((a, b) => {
+      const aValue = getCardValue(a, randomSuit, true);
+      const bValue = getCardValue(b, randomSuit, true);
+      return bValue - aValue;
+    });
+    
+    // Split cards into trump and non-trump
+    const trumpCards = sortedDeck.filter(card => card.suit === randomSuit);
+    const nonTrumpCards = sortedDeck.filter(card => card.suit !== randomSuit);
+    
+    // Distribute cards based on difficulty
+    switch (difficulty) {
+      case 'easy': {
+        // Easy: Player gets more trump cards and high value cards
+        const playerTrumpCount = Math.ceil(trumpCards.length * 0.6); // 60% of trump cards
+        const aiTrumpCount = trumpCards.length - playerTrumpCount;
+        
+        playerCards = [
+          ...trumpCards.slice(0, playerTrumpCount),
+          ...nonTrumpCards.slice(0, CARDS_PER_PLAYER - playerTrumpCount)
+        ];
+        aiCards = [
+          ...trumpCards.slice(playerTrumpCount),
+          ...nonTrumpCards.slice(CARDS_PER_PLAYER - playerTrumpCount, CARDS_PER_PLAYER * 2 - trumpCards.length)
+        ];
+        break;
+      }
+      case 'medium': {
+        // Medium: Fair distribution
+        const playerTrumpCount = Math.ceil(trumpCards.length * 0.5); // 50% of trump cards
+        const aiTrumpCount = trumpCards.length - playerTrumpCount;
+        
+        playerCards = [
+          ...trumpCards.slice(0, playerTrumpCount),
+          ...nonTrumpCards.slice(0, CARDS_PER_PLAYER - playerTrumpCount)
+        ];
+        aiCards = [
+          ...trumpCards.slice(playerTrumpCount),
+          ...nonTrumpCards.slice(CARDS_PER_PLAYER - playerTrumpCount, CARDS_PER_PLAYER * 2 - trumpCards.length)
+        ];
+        break;
+      }
+      case 'hard': {
+        // Hard: Player gets fewer trump cards and lower value cards
+        const playerTrumpCount = Math.floor(trumpCards.length * 0.3); // 30% of trump cards
+        const aiTrumpCount = trumpCards.length - playerTrumpCount;
+        
+        // Give AI the highest value cards
+        aiCards = [
+          ...trumpCards.slice(0, aiTrumpCount),
+          ...nonTrumpCards.slice(0, CARDS_PER_PLAYER - aiTrumpCount)
+        ];
+        
+        // Give player the remaining cards
+        playerCards = [
+          ...trumpCards.slice(aiTrumpCount),
+          ...nonTrumpCards.slice(CARDS_PER_PLAYER - aiTrumpCount, CARDS_PER_PLAYER * 2 - trumpCards.length)
+        ];
+        break;
+      }
+    }
+    
+    // Shuffle each hand to make the order random
+    playerCards = shuffleDeck(playerCards);
+    aiCards = shuffleDeck(aiCards);
     
     dispatch(setPlayerHand(playerCards));
     dispatch(setAIHand(aiCards));
@@ -117,7 +173,7 @@ export const playAICardThunk = createAsyncThunk(
   'game/playAICard',
   async (_, { dispatch, getState }) => {
     const state = getState() as RootState;
-    const { gameStarted, isPlayerTurn, gameOver, roundInProgress, roundCount, trumpSuit } = state.game;
+    const { gameStarted, isPlayerTurn, gameOver, roundInProgress, roundCount, trumpSuit, difficulty } = state.game;
     const { aiHand, playerCard } = state.player;
 
     if (!gameStarted || isPlayerTurn || gameOver || roundInProgress || roundCount >= CARDS_PER_PLAYER || !trumpSuit) return;
@@ -127,7 +183,7 @@ export const playAICardThunk = createAsyncThunk(
       dispatch(setCurrentRoundFirstPlayer('ai'));
     }
 
-    const aiMove = getAIMove(aiHand, playerCard, trumpSuit);
+    const aiMove = getAIMove(aiHand, playerCard, trumpSuit, difficulty);
     
     // Find the index of the played card in the AI's hand
     const cardIndex = aiHand.findIndex(card => 
@@ -166,6 +222,22 @@ export const resolveRoundThunk = createAsyncThunk(
     const firstCard = currentRoundFirstPlayer === 'player' ? playerCard : aiCard;
     const secondCard = currentRoundFirstPlayer === 'player' ? aiCard : playerCard;
 
+    // Calculate card values for logging (without trump bonus)
+    const playerCardValue = calculateCardValue(playerCard, trumpSuit);
+    const aiCardValue = calculateCardValue(aiCard, trumpSuit);
+    const roundTotalValue = playerCardValue + aiCardValue;
+
+    // Log round details
+    console.log(`\n=== Round ${roundCount + 1} ===`);
+    console.log(`Player played: ${playerCard.suit}${playerCard.value} (Base Value: ${playerCardValue}${playerCard.suit === trumpSuit ? ' + Trump Bonus' : ''})`);
+    console.log(`AI played: ${aiCard.suit}${aiCard.value} (Base Value: ${aiCardValue}${aiCard.suit === trumpSuit ? ' + Trump Bonus' : ''})`);
+    console.log(`Trump suit: ${trumpSuit}`);
+    console.log(`Round total value: ${roundTotalValue}`);
+    if (tieMode) {
+      console.log(`Tie stake: ${tieStake}`);
+      console.log(`Accumulated tie values: ${tiedCardValues}`);
+    }
+
     let winner: PlayerType | null = null;
 
     // Check if second player followed suit
@@ -183,20 +255,21 @@ export const resolveRoundThunk = createAsyncThunk(
       winner = determineRoundWinner(playerCard, aiCard, trumpSuit);
     }
 
-    // Calculate total value of cards in this round
-    const playerCardValue = calculateCardValue(playerCard);
-    const aiCardValue = calculateCardValue(aiCard);
-    const roundTotalValue = playerCardValue + aiCardValue;
-
     // Increment the stake for this round
     const currentStake = tieMode ? tieStake + 1 : 1;
 
     if (winner === 'player') {
-      dispatch(updateScores({ playerScore: playerScore + currentStake, aiScore }));
+      const newPlayerScore = playerScore + currentStake;
+      const newPlayerTotalValue = playerTotalValue + roundTotalValue + tiedCardValues;
+      dispatch(updateScores({ playerScore: newPlayerScore, aiScore }));
       dispatch(updateTotalValues({ 
-        playerTotalValue: playerTotalValue + roundTotalValue + tiedCardValues, 
+        playerTotalValue: newPlayerTotalValue, 
         aiTotalValue 
       }));
+
+      console.log(`\nRound Winner: Player`);
+      console.log(`Player score: ${newPlayerScore} (${currentStake} points this round)`);
+      console.log(`Player total value: ${newPlayerTotalValue} (${roundTotalValue + tiedCardValues} points this round)`);
 
       const scoreMessage = currentStake > 1
         ? `You won this round and all ${currentStake} tie stake points! (${roundTotalValue + tiedCardValues} card points)`
@@ -208,11 +281,17 @@ export const resolveRoundThunk = createAsyncThunk(
       dispatch(setTieStake(0));
       dispatch(setTiedCardValues(0));
     } else if (winner === 'ai') {
-      dispatch(updateScores({ playerScore, aiScore: aiScore + currentStake }));
+      const newAIScore = aiScore + currentStake;
+      const newAITotalValue = aiTotalValue + roundTotalValue + tiedCardValues;
+      dispatch(updateScores({ playerScore, aiScore: newAIScore }));
       dispatch(updateTotalValues({ 
         playerTotalValue, 
-        aiTotalValue: aiTotalValue + roundTotalValue + tiedCardValues 
+        aiTotalValue: newAITotalValue 
       }));
+
+      console.log(`\nRound Winner: AI`);
+      console.log(`AI score: ${newAIScore} (${currentStake} points this round)`);
+      console.log(`AI total value: ${newAITotalValue} (${roundTotalValue + tiedCardValues} points this round)`);
 
       const scoreMessage = currentStake > 1
         ? `AI won this round and all ${currentStake} tie stake points! (${roundTotalValue + tiedCardValues} card points)`
@@ -224,6 +303,10 @@ export const resolveRoundThunk = createAsyncThunk(
       dispatch(setTieStake(0));
       dispatch(setTiedCardValues(0));
     } else {
+      console.log(`\nRound Result: Tie`);
+      console.log(`Tie stake increased to: ${currentStake}`);
+      console.log(`Accumulated tie values: ${tiedCardValues + roundTotalValue}`);
+
       dispatch(setRoundResult(`This round is a tie! Another round will be played with ${roundTotalValue} more card points at stake.`));
       dispatch(setTieMode(true));
       dispatch(setTieStake(currentStake));
@@ -238,6 +321,12 @@ export const resolveRoundThunk = createAsyncThunk(
     // Check for game end
     const isLastRound = roundCount + 1 >= CARDS_PER_PLAYER;
     if (isLastRound && !tieMode) {
+      console.log('\n=== Game Over ===');
+      console.log(`Final Player Score: ${playerScore + (winner === 'player' ? currentStake : 0)}`);
+      console.log(`Final AI Score: ${aiScore + (winner === 'ai' ? currentStake : 0)}`);
+      console.log(`Final Player Total Value: ${playerTotalValue + (winner === 'player' ? roundTotalValue + tiedCardValues : 0)}`);
+      console.log(`Final AI Total Value: ${aiTotalValue + (winner === 'ai' ? roundTotalValue + tiedCardValues : 0)}`);
+
       setTimeout(() => {
         dispatch(setGameOver(true));
         dispatch(setRoundInProgress(false));
