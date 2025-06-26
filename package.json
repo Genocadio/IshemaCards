@@ -2,7 +2,7 @@
   "name": "card-game-server",
   "version": "1.0.0",
   "description": "A WebSocket-based card game server",
-  "main": "dist/index.js",
+  "main": "src/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
