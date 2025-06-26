@@ -601,75 +601,77 @@ export class GameServer {
   }
 
   private completeRound(match: Match) {
-    const roundEvaluator = this.roundEvaluators.get(match.id);
-    if (!roundEvaluator) {
-      console.error('No round evaluator found for match:', match.id);
-      return;
-    }
-
-    // Convert current round to PlayerMove format for the evaluator
-    const moves: PlayerMove[] = match.playground.map(playedCard => ({
-      playerId: playedCard.playerId,
-      card: playedCard.card,
-      teamId: match.players.get(playedCard.playerId)!.teamId
-    }));
-
-    // Evaluate the round using RoundEvaluator
-    const roundResult = roundEvaluator.evaluateRound(moves);
-
-    // Create a copy of played cards for the payload before clearing the playground
-    const playedCardsForPayload = match.playground.map(pc => this.createPayloadPlayedCard(pc, match));
-
-    // Update match state based on evaluation
-    const winnerTeam = roundResult.winningTeam;
-    const winnerPlayerId = roundResult.winningPlayerId;
-    const pointsEarned = roundResult.pointsEarned;
-
-    // Update scores
-    match.roundWins[winnerTeam]++;
-    match.teamScores[winnerTeam] += pointsEarned;
-
-    // The winner of the round starts the next round.
-    // This must be set BEFORE creating the game state for the payload.
-    match.currentPlayerId = winnerPlayerId;
-    match.firstPlayerOfRound = winnerPlayerId;
-    
-    // Clear the playground for the next round.
-    match.playground = [];
-
-    // Send round result to all players
-    const winnerPlayerInfo = this.createPlayerInfo(match.players.get(winnerPlayerId)!, match);
-
-    Array.from(match.players.values()).forEach(p => {
-      if(p.ws && p.connected) {
-        const roundCompletedPayload: RoundCompletedPayload = {
-          // This gameState now correctly reflects the winner as the next player and the cleared playground
-          gameState: this.createGameState(match, p.id),
-          roundResult: {
-            winner: winnerPlayerInfo,
-            winningTeam: winnerTeam,
-            pointsEarned: pointsEarned,
-            playedCards: playedCardsForPayload,
-            analysis: {
-              roundQuality: String(roundResult.overallRoundQuality),
-              roundAnalysis: roundResult.roundAnalysis
-            }
-          }
-        };
-        const message = MessageBuilder.createMessage(MessageType.ROUND_COMPLETED, roundCompletedPayload);
-        p.ws.send(JSON.stringify(message));
+    setTimeout(() => {
+      const roundEvaluator = this.roundEvaluators.get(match.id);
+      if (!roundEvaluator) {
+        console.error('No round evaluator found for match:', match.id);
+        return;
       }
-    });
 
-    // Check if the game is complete (i.e., players have no more cards)
-    const anyPlayerHasCards = Array.from(match.players.values()).some(p => p.hand.length > 0);
-    
-    if (!anyPlayerHasCards) {
-      this.completeMatch(match);
-    } else {
-      // If the game continues, explicitly notify clients about the turn change.
-      this.notifyTurnChange(match);
-    }
+      // Convert current round to PlayerMove format for the evaluator
+      const moves: PlayerMove[] = match.playground.map(playedCard => ({
+        playerId: playedCard.playerId,
+        card: playedCard.card,
+        teamId: match.players.get(playedCard.playerId)!.teamId
+      }));
+
+      // Evaluate the round using RoundEvaluator
+      const roundResult = roundEvaluator.evaluateRound(moves);
+
+      // Create a copy of played cards for the payload before clearing the playground
+      const playedCardsForPayload = match.playground.map(pc => this.createPayloadPlayedCard(pc, match));
+
+      // Update match state based on evaluation
+      const winnerTeam = roundResult.winningTeam;
+      const winnerPlayerId = roundResult.winningPlayerId;
+      const pointsEarned = roundResult.pointsEarned;
+
+      // Update scores
+      match.roundWins[winnerTeam]++;
+      match.teamScores[winnerTeam] += pointsEarned;
+
+      // The winner of the round starts the next round.
+      // This must be set BEFORE creating the game state for the payload.
+      match.currentPlayerId = winnerPlayerId;
+      match.firstPlayerOfRound = winnerPlayerId;
+      
+      // Clear the playground for the next round.
+      match.playground = [];
+
+      // Send round result to all players
+      const winnerPlayerInfo = this.createPlayerInfo(match.players.get(winnerPlayerId)!, match);
+
+      Array.from(match.players.values()).forEach(p => {
+        if(p.ws && p.connected) {
+          const roundCompletedPayload: RoundCompletedPayload = {
+            // This gameState now correctly reflects the winner as the next player and the cleared playground
+            gameState: this.createGameState(match, p.id),
+            roundResult: {
+              winner: winnerPlayerInfo,
+              winningTeam: winnerTeam,
+              pointsEarned: pointsEarned,
+              playedCards: playedCardsForPayload,
+              analysis: {
+                roundQuality: String(roundResult.overallRoundQuality),
+                roundAnalysis: roundResult.roundAnalysis
+              }
+            }
+          };
+          const message = MessageBuilder.createMessage(MessageType.ROUND_COMPLETED, roundCompletedPayload);
+          p.ws.send(JSON.stringify(message));
+        }
+      });
+
+      // Check if the game is complete (i.e., players have no more cards)
+      const anyPlayerHasCards = Array.from(match.players.values()).some(p => p.hand.length > 0);
+      
+      if (!anyPlayerHasCards) {
+        this.completeMatch(match);
+      } else {
+        // If the game continues, explicitly notify clients about the turn change.
+        this.notifyTurnChange(match);
+      }
+    }, 1000);
   }
 
   private completeMatch(match: Match) {
