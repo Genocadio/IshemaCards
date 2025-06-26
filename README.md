@@ -1,36 +1,124 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Card Game Server
 
-## Getting Started
+A WebSocket-based card game server implementation in TypeScript. This server manages multiple concurrent card game matches, handling player connections, game state, and match progression.
 
-First, run the development server:
+## Features
 
+- WebSocket-based real-time communication
+- Support for multiple concurrent matches
+- Team-based gameplay (2 teams)
+- Automatic matchmaking and team balancing
+- Player reconnection support
+- Match state persistence
+- Automatic cleanup of old matches
+
+## Prerequisites
+
+- Node.js (v14 or higher)
+- npm or yarn
+
+## Installation
+
+1. Clone the repository:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone <repository-url>
+cd card-game-server
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Install dependencies:
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Development
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+To run the server in development mode:
+```bash
+npm run dev
+```
 
-## Learn More
+## Building
 
-To learn more about Next.js, take a look at the following resources:
+To build the project:
+```bash
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Running
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+To run the built server:
+```bash
+npm start
+```
 
-## Deploy on Vercel
+## WebSocket API
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The server accepts the following WebSocket messages:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Create Match
+```json
+{
+  "type": "create_match",
+  "payload": {
+    "playerId": "optional-player-id",
+    "teamSize": 2
+  }
+}
+```
+
+### Join Match
+```json
+{
+  "type": "join_match",
+  "payload": {
+    "matchId": "match-id",
+    "playerId": "optional-player-id"
+  }
+}
+```
+
+### Play Card
+```json
+{
+  "type": "play_card",
+  "payload": {
+    "playerId": "player-id",
+    "matchId": "match-id",
+    "card": {
+      "id": "card-id",
+      "suit": "hearts",
+      "value": 5
+    }
+  }
+}
+```
+
+### Reconnect
+```json
+{
+  "type": "reconnect",
+  "payload": {
+    "playerId": "player-id",
+    "matchId": "match-id"
+  }
+}
+```
+
+## Server Events
+
+The server sends the following events:
+
+- `match_created`: When a new match is created
+- `player_joined`: When a player joins a match
+- `match_started`: When a match begins
+- `card_played`: When a player plays a card
+- `round_result`: When a round is completed
+- `game_result`: When a match is completed
+- `player_disconnected`: When a player disconnects
+- `player_reconnected`: When a player reconnects
+- `match_paused`: When a match is paused
+- `match_resumed`: When a match is resumed
+
+## License
+
+MIT 
