@@ -190,6 +190,9 @@ export interface GameState {
     totalRounds: number;
     trumpSuit?: string;
     createdAt: string;
+    turnIndex: number;
+    firstPlayerIndex: number;
+    playOrder: string[];
   };
   
   players: {

@@ -977,10 +977,8 @@ export class GameServer {
   private createGameState(match: Match, forPlayerId: string): GameState {
     const receivingPlayer = match.players.get(forPlayerId)!;
     const allPlayers = Array.from(match.players.values()).map(p => this.createPlayerInfo(p, match));
-    
     const lastPlayedInternal = match.playground.length > 0 ? match.playground[match.playground.length - 1] : undefined;
     const lastPlayedPlayer = lastPlayedInternal ? match.players.get(lastPlayedInternal.playerId) : undefined;
-    
     return {
       match: {
         id: match.id,
@@ -988,7 +986,10 @@ export class GameServer {
         currentRound: match.roundWins.team1 + match.roundWins.team2 + 1,
         totalRounds: 8, // This should be configurable
         trumpSuit: match.trumpSuit,
-        createdAt: match.createdAt.toISOString()
+        createdAt: match.createdAt.toISOString(),
+        turnIndex: match.turnIndex ?? 0,
+        firstPlayerIndex: match.firstPlayerIndex ?? 0,
+        playOrder: match.playOrder ?? []
       },
       players: {
         all: allPlayers,
