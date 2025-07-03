@@ -92,6 +92,9 @@ export interface Match {
   currentPlayerId?: string;
   firstPlayerOfRound?: string;
   inviteCodes?: { team1: string, team2: string };
+  playOrder?: string[];
+  firstPlayerIndex?: number;
+  turnIndex?: number;
 }
 
 // ============================================================================

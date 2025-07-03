@@ -352,6 +352,10 @@ export class GameServer {
     
     // Start match if full
     if (match.players.size === match.teamSize * 2) {
+      // Build and store the play order
+      match.playOrder = this.buildAlternatingPlayOrder(match);
+      match.firstPlayerIndex = 0;
+      match.turnIndex = 0;
       this.startMatch(match);
     }
 
@@ -630,11 +634,21 @@ export class GameServer {
       match.roundWins[winnerTeam]++;
       match.teamScores[winnerTeam] += pointsEarned;
 
-      // The winner of the round starts the next round.
-      // This must be set BEFORE creating the game state for the payload.
-      match.currentPlayerId = winnerPlayerId;
-      match.firstPlayerOfRound = winnerPlayerId;
-      
+      // Rotate playOrder so winner is first
+      if (match.playOrder && match.playOrder.length > 0) {
+        const winnerIdx = match.playOrder.indexOf(winnerPlayerId);
+        if (winnerIdx !== -1) {
+          match.playOrder = [
+            ...match.playOrder.slice(winnerIdx),
+            ...match.playOrder.slice(0, winnerIdx)
+          ];
+          match.firstPlayerIndex = 0;
+          match.turnIndex = 0;
+          match.currentPlayerId = match.playOrder[0];
+          match.firstPlayerOfRound = match.playOrder[0];
+        }
+      }
+
       // Clear the playground for the next round.
       match.playground = [];
 
@@ -708,10 +722,9 @@ export class GameServer {
   }
 
   private setNextPlayer(match: Match) {
-    const playersArray = Array.from(match.players.values());
-    const currentIndex = playersArray.findIndex(p => p.id === match.currentPlayerId);
-    const nextIndex = (currentIndex + 1) % playersArray.length;
-    match.currentPlayerId = playersArray[nextIndex].id;
+    if (!match.playOrder || match.playOrder.length === 0) return;
+    match.turnIndex = ((match.turnIndex ?? 0) + 1) % match.playOrder.length;
+    match.currentPlayerId = match.playOrder[match.turnIndex];
     this.notifyTurnChange(match);
   }
 
@@ -766,12 +779,15 @@ export class GameServer {
       player.hand = cards.slice(startIndex, startIndex + cardsPerPlayer);
     });
 
-    // Randomly select first player
-    const firstPlayer = playersArray[Math.floor(Math.random() * playersArray.length)];
-    match.currentPlayerId = firstPlayer.id;
-    match.firstPlayerOfRound = firstPlayer.id;
-
-    const firstPlayerInfo = this.createPlayerInfo(firstPlayer, match);
+    // Use playOrder for turn logic
+    if (match.playOrder && match.playOrder.length > 0) {
+      match.firstPlayerIndex = 0;
+      match.turnIndex = 0;
+      match.currentPlayerId = match.playOrder[0];
+      match.firstPlayerOfRound = match.playOrder[0];
+    }
+    const firstPlayer = match.players.get(match.currentPlayerId!);
+    const firstPlayerInfo = firstPlayer ? this.createPlayerInfo(firstPlayer, match) : undefined;
 
     // Send game start to all players with custom payload
     playersArray.forEach(player => {
@@ -779,7 +795,7 @@ export class GameServer {
         const gameState = this.createGameState(match, player.id);
         const matchStartedPayload: MatchStartedPayload = {
           gameState,
-          startingPlayer: firstPlayerInfo,
+          startingPlayer: firstPlayerInfo!,
           trumpSuit: match.trumpSuit,
         };
         const message = MessageBuilder.createMessage(MessageType.MATCH_STARTED, matchStartedPayload);
@@ -1002,5 +1018,26 @@ export class GameServer {
         lastActivity: new Date().toISOString()
       }
     };
+  }
+
+  // Helper to build a team-alternating play order
+  private buildAlternatingPlayOrder(match: Match): string[] {
+    const team1 = Array.from(match.players.values()).filter(p => p.teamId === 'team1');
+    const team2 = Array.from(match.players.values()).filter(p => p.teamId === 'team2');
+    const order: string[] = [];
+    // Randomly pick which team starts
+    const startTeam = Math.random() < 0.5 ? 'team1' : 'team2';
+    let t1 = [...team1];
+    let t2 = [...team2];
+    let currentTeam = startTeam;
+    while (t1.length > 0 || t2.length > 0) {
+      if (currentTeam === 'team1' && t1.length > 0) {
+        order.push(t1.shift()!.id);
+      } else if (currentTeam === 'team2' && t2.length > 0) {
+        order.push(t2.shift()!.id);
+      }
+      currentTeam = currentTeam === 'team1' ? 'team2' : 'team1';
+    }
+    return order;
   }
 }
