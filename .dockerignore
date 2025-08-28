@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+dist
+.git
+.gitignore
+.DS_Store
+coverage
+.vscode
+.idea
+*.local
+**/*.swp
+README.md
+WEBSOCKET_API.md
+FRONTEND_GUIDE.md
+app.ts
+

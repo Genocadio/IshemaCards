@@ -1,7 +1,8 @@
 import { GameServer } from './GameServer';
 
 // Create and start the game server
-const gameServer = new GameServer(8080);
+const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 8080;
+const gameServer = new GameServer(port);
 
 // Optional: Add periodic cleanup of old completed matches
 setInterval(() => {

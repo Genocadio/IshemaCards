@@ -48,6 +48,10 @@ export class GameServer {
   private playerService: PlayerService;
   private notificationService: NotificationService;
 
+  // Disconnection handling with delay
+  private disconnectionTimers = new Map<string, NodeJS.Timeout>();
+  private reconnectionCounters = new Map<string, number>();
+
   constructor(port: number = 8080) {
     this.httpServer = createServer(this.handleHttpRequest.bind(this));
     this.wss = new WebSocketServer({ server: this.httpServer });
@@ -57,6 +61,11 @@ export class GameServer {
     this.notificationService = new NotificationService();
     
     this.wss.on('connection', (ws: GameWebSocket, req: IncomingMessage) => {
+      // Keepalive: mark alive and handle pongs
+      (ws as any).isAlive = true;
+      ws.on('pong', () => {
+        (ws as any).isAlive = true;
+      });
       console.log('New WebSocket connection attempt');
       
       // Extract connection info from URL path and query parameters
@@ -137,6 +146,20 @@ export class GameServer {
       });
     });
 
+    // Periodic ping for keepalive and dead connection detection
+    const pingIntervalMs = 30000;
+    const pingInterval = setInterval(() => {
+      this.wss.clients.forEach((client: any) => {
+        if (client.isAlive === false) {
+          try { client.terminate(); } catch {}
+          return;
+        }
+        client.isAlive = false;
+        try { client.ping(); } catch {}
+      });
+    }, pingIntervalMs);
+    this.wss.on('close', () => clearInterval(pingInterval));
+
     this.httpServer.listen(port, () => {
       console.log(`Game server running on port ${port}`);
       console.log(`WebSocket connections: ws://localhost:${port}/invite/{inviteCode}`);
@@ -163,7 +186,7 @@ export class GameServer {
       req.on('end', () => {
         try {
           const { teamSize = 2 } = JSON.parse(body);
-          this.handleCreateMatchHttp(res, Number(teamSize));
+          this.handleCreateMatchHttp(req, res, Number(teamSize));
         } catch (error) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Invalid request body' }));
@@ -183,7 +206,7 @@ export class GameServer {
     }
   }
 
-  private handleCreateMatchHttp(res: ServerResponse, teamSize: number) {
+  private handleCreateMatchHttp(req: IncomingMessage, res: ServerResponse, teamSize: number) {
     // Validate team size
     if (teamSize < 1 || teamSize > 3) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -216,9 +239,15 @@ export class GameServer {
     this.inviteCodes.set(team1InviteCode, { matchId, teamId: 'team1' });
     this.inviteCodes.set(team2InviteCode, { matchId, teamId: 'team2' });
 
-    const port = this.httpServer.address() && typeof this.httpServer.address() === 'object' 
-      ? (this.httpServer.address() as any).port 
-      : 8080;
+    const addressInfo = this.httpServer.address();
+    const localPort = addressInfo && typeof addressInfo === 'object' ? (addressInfo as any).port : 8080;
+    // Build external host and protocol from forwarded headers when behind proxy (e.g., Render)
+    const forwardedProto = (req.headers['x-forwarded-proto'] as string) || undefined;
+    const forwardedHost = (req.headers['x-forwarded-host'] as string) || undefined;
+    const hostHeader = req.headers.host || `localhost:${localPort}`;
+    const externalProto = forwardedProto || (hostHeader.toString().startsWith('localhost') ? 'ws' : 'ws');
+    const externalHost = forwardedHost || hostHeader;
+    const wsScheme = externalProto === 'https' ? 'wss' : (externalProto === 'http' ? 'ws' : externalProto);
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -226,13 +255,13 @@ export class GameServer {
       teamSize,
       team1: {
         inviteCode: team1InviteCode,
-        wsUrl: `ws://localhost:${port}/invite/${team1InviteCode}`,
-        joinUrl: `ws://localhost:${port}/invite/${team1InviteCode}?name=YourName`
+        wsUrl: `${wsScheme}://${externalHost}/invite/${team1InviteCode}`,
+        joinUrl: `${wsScheme}://${externalHost}/invite/${team1InviteCode}?name=YourName`
       },
       team2: {
         inviteCode: team2InviteCode,
-        wsUrl: `ws://localhost:${port}/invite/${team2InviteCode}`,
-        joinUrl: `ws://localhost:${port}/invite/${team2InviteCode}?name=YourName`
+        wsUrl: `${wsScheme}://${externalHost}/invite/${team2InviteCode}`,
+        joinUrl: `${wsScheme}://${externalHost}/invite/${team2InviteCode}?name=YourName`
       },
       info: {
         message: 'Share the appropriate team invite URL with players',
@@ -291,12 +320,18 @@ export class GameServer {
     const playerId = providedPlayerId || this.playerService.generateAnonymousId();
     const playerName = providedName || this.playerService.generateRandomName();
     
-    // Check if playerId is already active in any match
-    if (this.activePlayers.has(playerId)) {
-      return { 
-        success: false, 
-        error: 'Player ID already in use. Please choose a different ID or let the system generate one.' 
-      };
+    // Check if playerId is already active in a STARTED match (allow joining waiting matches)
+    if (providedPlayerId && this.activePlayers.has(playerId)) {
+      // Find if the player is in an active/started match
+      const activeMatch = this.findPlayerActiveMatch(playerId);
+      if (activeMatch && activeMatch.status !== 'waiting') {
+        return { 
+          success: false, 
+          error: 'You are already in an active match. Please finish that game first or reconnect to it.' 
+        };
+      }
+      // If player is only in waiting matches, allow them to join this new match
+      // (they'll be removed from previous waiting matches)
     }
 
     // Create new player
@@ -309,6 +344,11 @@ export class GameServer {
       ws,
       anonymousId: playerId.startsWith('anon_') ? playerId : undefined
     };
+
+    // If player was in other waiting matches, remove them
+    if (providedPlayerId) {
+      this.removePlayerFromWaitingMatches(playerId);
+    }
 
     match.players.set(playerId, player);
     this.activePlayers.add(playerId);
@@ -362,15 +402,54 @@ export class GameServer {
     return { success: true, playerId };
   }
 
+  // Helper method to find if a player is in an active/started match
+  private findPlayerActiveMatch(playerId: string): Match | null {
+    for (const [matchId, match] of this.matches) {
+      if (match.players.has(playerId) && match.status !== 'waiting') {
+        return match;
+      }
+    }
+    return null;
+  }
+
+  // Helper method to remove player from all waiting matches
+  private removePlayerFromWaitingMatches(playerId: string): void {
+    for (const [matchId, match] of this.matches) {
+      if (match.status === 'waiting' && match.players.has(playerId)) {
+        const player = match.players.get(playerId);
+        if (player) {
+          match.players.delete(playerId);
+          this.activePlayers.delete(playerId);
+          console.log(`Removed player ${playerId} from waiting match ${matchId}`);
+        }
+      }
+    }
+  }
+
   private handlePlayerReconnection(
     ws: GameWebSocket, 
     match: Match, 
     existingPlayer: Player
   ): { success: boolean; error?: string; playerId?: string } {
     
-    // Handle existing connection
+    // Clear any pending disconnection timer for this player
+    const existingTimer = this.disconnectionTimers.get(existingPlayer.id);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.disconnectionTimers.delete(existingPlayer.id);
+      console.log(`Cleared pending disconnection timer for player ${existingPlayer.name} (${existingPlayer.id})`);
+    }
+
+    // Increment reconnection counter to prevent race conditions
+    const currentCounter = this.reconnectionCounters.get(existingPlayer.id) || 0;
+    const newCounter = currentCounter + 1;
+    this.reconnectionCounters.set(existingPlayer.id, newCounter);
+    
+    // Handle existing connection safely: mark old socket to be ignored on close
     if (existingPlayer.connected && existingPlayer.ws) {
-      existingPlayer.ws.close();
+      const oldWs: any = existingPlayer.ws;
+      oldWs.__ignoreClose = true;
+      try { existingPlayer.ws.close(); } catch {}
     }
 
     // Update player's connection
@@ -379,7 +458,7 @@ export class GameServer {
     this.activePlayers.add(existingPlayer.id);
     ws.playerId = existingPlayer.id;
 
-    console.log('Player reconnected:', {
+    console.log(`Player reconnected (attempt #${newCounter}):`, {
       playerId: existingPlayer.id,
       playerName: existingPlayer.name,
       teamId: existingPlayer.teamId,
@@ -713,9 +792,25 @@ export class GameServer {
       }
     });
 
-    // Clean up - remove players from active set
+    // Clean up - remove players from active set and clean up timers/counters
     for (const playerId of match.players.keys()) {
       this.activePlayers.delete(playerId);
+      
+      // Clean up disconnection timers
+      const timer = this.disconnectionTimers.get(playerId);
+      if (timer) {
+        clearTimeout(timer);
+        this.disconnectionTimers.delete(playerId);
+      }
+      
+      // Clean up reconnection counters
+      this.reconnectionCounters.delete(playerId);
+    }
+
+    // Clean up invite codes immediately on match completion
+    if (match.inviteCodes) {
+      this.inviteCodes.delete(match.inviteCodes.team1);
+      this.inviteCodes.delete(match.inviteCodes.team2);
     }
 
     console.log(`Match ${match.id} completed. Winner: ${winnerTeamId} with ${match.teamScores[winnerTeamId]} points`);
@@ -763,16 +858,18 @@ export class GameServer {
     const trumpSuit = this.deckService.selectTrumpSuit();
     match.trumpSuit = trumpSuit;
 
-    // Create a new RoundEvaluator for this match
-    this.roundEvaluators.set(match.id, new RoundEvaluator(
-      trumpSuit,
-      8, // totalRounds
-      match.players.size
-    ));
-    
     // Distribute cards evenly
     const playersArray = Array.from(match.players.values());
     const cardsPerPlayer = Math.floor(cards.length / playersArray.length);
+    // Track total rounds = cards per player
+    (match as any).totalRounds = cardsPerPlayer;
+    
+    // Create a new RoundEvaluator for this match with accurate rounds
+    this.roundEvaluators.set(match.id, new RoundEvaluator(
+      trumpSuit,
+      Math.max(1, cardsPerPlayer),
+      match.players.size
+    ));
     
     playersArray.forEach((player, index) => {
       const startIndex = index * cardsPerPlayer;
@@ -824,9 +921,48 @@ export class GameServer {
       return;
     }
 
+    // Guard against stale socket close flipping state during reconnection
+    if (player.ws && player.ws !== ws && (player.ws as any).__ignoreClose === true) {
+      // This close event is from an old socket; ignore
+      return;
+    }
+
+    // Clear any existing disconnection timer for this player
+    const existingTimer = this.disconnectionTimers.get(ws.playerId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      this.disconnectionTimers.delete(ws.playerId);
+    }
+
+    // Set a 5-second delay before publishing disconnection
+    const disconnectionTimer = setTimeout(() => {
+      this.publishPlayerDisconnection(ws.playerId!, ws.matchId!, ws.inviteCode!, player);
+    }, 5000);
+
+    this.disconnectionTimers.set(ws.playerId, disconnectionTimer);
+
+    // Mark player as disconnected immediately but don't publish yet
     player.connected = false;
     player.ws = undefined;
     this.activePlayers.delete(ws.playerId);
+
+    console.log(`Player ${player.name} (${ws.playerId}) disconnected from match ${ws.matchId} - waiting 5s before publishing`);
+  }
+
+  private publishPlayerDisconnection(playerId: string, matchId: string, inviteCode: string, player: Player) {
+    const match = this.matches.get(matchId);
+    if (!match) {
+      return;
+    }
+
+    // Check if player has reconnected during the delay
+    if (player.connected) {
+      console.log(`Player ${player.name} (${playerId}) reconnected during disconnection delay - not publishing disconnection`);
+      return;
+    }
+
+    // Clear the timer reference
+    this.disconnectionTimers.delete(playerId);
 
     const playerInfo = this.createPlayerInfo(player, match);
     const matchSummary = this.createMatchSummary(match);
@@ -850,12 +986,12 @@ export class GameServer {
       });
     }
 
-    // Notify other players
+    // Notify other players about the disconnection
     const disconnectedPayload: PlayerDisconnectedPayload = {
       player: playerInfo,
       match: matchSummary,
       reconnectInfo: {
-        inviteCode: ws.inviteCode!,
+        inviteCode: inviteCode,
         playerId: player.id,
         expiresAt: new Date(Date.now() + 3600 * 1000).toISOString() // 1 hour to reconnect
       }
@@ -863,7 +999,7 @@ export class GameServer {
     const disconnectedMessage = MessageBuilder.createMessage(MessageType.PLAYER_DISCONNECTED, disconnectedPayload);
     this.notificationService.broadcastToMatch(match, disconnectedMessage, player.id);
 
-    console.log(`Player ${player.name} (${ws.playerId}) disconnected from match ${ws.matchId}`);
+    console.log(`Published disconnection for player ${player.name} (${playerId}) after 5s delay`);
   }
 
   private allPlayersConnected(match: Match): boolean {
@@ -904,9 +1040,19 @@ export class GameServer {
         // Clean up round evaluator
         this.roundEvaluators.delete(matchId);
         
-        // Remove players from active set
+        // Remove players from active set and clean up timers/counters
         for (const playerId of match.players.keys()) {
           this.activePlayers.delete(playerId);
+          
+          // Clean up disconnection timers
+          const timer = this.disconnectionTimers.get(playerId);
+          if (timer) {
+            clearTimeout(timer);
+            this.disconnectionTimers.delete(playerId);
+          }
+          
+          // Clean up reconnection counters
+          this.reconnectionCounters.delete(playerId);
         }
       }
     }
@@ -984,7 +1130,7 @@ export class GameServer {
         id: match.id,
         status: match.status,
         currentRound: match.roundWins.team1 + match.roundWins.team2 + 1,
-        totalRounds: 8, // This should be configurable
+        totalRounds: (match as any).totalRounds ?? 8,
         trumpSuit: match.trumpSuit,
         createdAt: match.createdAt.toISOString(),
         turnIndex: match.turnIndex ?? 0,

@@ -95,6 +95,7 @@ export interface Match {
   playOrder?: string[];
   firstPlayerIndex?: number;
   turnIndex?: number;
+  totalRounds?: number; // Number of tricks in the match, equals cards per player
 }
 
 // ============================================================================
