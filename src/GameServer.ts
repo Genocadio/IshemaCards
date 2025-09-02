@@ -1,6 +1,8 @@
 import { WebSocket, Server as WebSocketServer } from 'ws';
 import { createServer, Server as HttpServer, IncomingMessage, ServerResponse } from 'http';
 import { v4 as uuidv4 } from 'uuid';
+import * as fs from 'fs';
+import * as path from 'path';
 import { 
   Match, 
   Player, 
@@ -22,7 +24,9 @@ import {
   PlayerDisconnectedPayload,
   MatchPausedPayload,
   MatchResumedPayload,
-  ReconnectionSuccessfulPayload
+  ReconnectionSuccessfulPayload,
+  PlayerExitedPayload,
+  MatchCancelledPayload
 } from './types';
 import { RoundEvaluator, PlayerMove } from './lib/RoundEvaluator';
 import { DeckService } from './services/DeckService';
@@ -51,6 +55,9 @@ export class GameServer {
   // Disconnection handling with delay
   private disconnectionTimers = new Map<string, NodeJS.Timeout>();
   private reconnectionCounters = new Map<string, number>();
+  
+  // Persistence
+  private readonly PERSISTENCE_FILE = path.join(process.cwd(), 'invite-codes.json');
 
   constructor(port: number = 8080) {
     this.httpServer = createServer(this.handleHttpRequest.bind(this));
@@ -59,6 +66,9 @@ export class GameServer {
     this.deckService = new DeckService();
     this.playerService = new PlayerService();
     this.notificationService = new NotificationService();
+    
+    // Load persisted invite codes on startup
+    this.loadInviteCodes();
     
     this.wss.on('connection', (ws: GameWebSocket, req: IncomingMessage) => {
       // Keepalive: mark alive and handle pongs
@@ -92,7 +102,13 @@ export class GameServer {
       // Validate invite code
       const joinInfo = this.inviteCodes.get(inviteCode);
       if (!joinInfo) {
-        console.log('Connection rejected: Invalid or expired invite code.', { inviteCode });
+        console.log('Connection rejected: Invalid or expired invite code.', { 
+          inviteCode,
+          totalInviteCodes: this.inviteCodes.size,
+          availableInviteCodes: Array.from(this.inviteCodes.keys()),
+          totalMatches: this.matches.size,
+          matchIds: Array.from(this.matches.keys())
+        });
         ws.close(1008, 'Invalid or expired invite code');
         return;
       }
@@ -164,6 +180,41 @@ export class GameServer {
       console.log(`Game server running on port ${port}`);
       console.log(`WebSocket connections: ws://localhost:${port}/invite/{inviteCode}`);
     });
+  }
+
+  // Persistence methods
+  private loadInviteCodes(): void {
+    try {
+      if (fs.existsSync(this.PERSISTENCE_FILE)) {
+        const data = fs.readFileSync(this.PERSISTENCE_FILE, 'utf8');
+        const persistedData = JSON.parse(data);
+        
+        // Restore invite codes
+        if (persistedData.inviteCodes) {
+          for (const [code, info] of Object.entries(persistedData.inviteCodes)) {
+            this.inviteCodes.set(code, info as { matchId: string, teamId: 'team1' | 'team2'});
+          }
+        }
+        
+        console.log(`Loaded ${this.inviteCodes.size} invite codes from persistence file`);
+      } else {
+        console.log('No persistence file found, starting with empty invite codes');
+      }
+    } catch (error) {
+      console.error('Error loading invite codes from persistence file:', error);
+    }
+  }
+
+  private saveInviteCodes(): void {
+    try {
+      const data = {
+        inviteCodes: Object.fromEntries(this.inviteCodes),
+        timestamp: new Date().toISOString()
+      };
+      fs.writeFileSync(this.PERSISTENCE_FILE, JSON.stringify(data, null, 2));
+    } catch (error) {
+      console.error('Error saving invite codes to persistence file:', error);
+    }
   }
 
   private handleHttpRequest(req: IncomingMessage, res: ServerResponse) {
@@ -238,6 +289,9 @@ export class GameServer {
     this.matches.set(matchId, match);
     this.inviteCodes.set(team1InviteCode, { matchId, teamId: 'team1' });
     this.inviteCodes.set(team2InviteCode, { matchId, teamId: 'team2' });
+    
+    // Persist invite codes
+    this.saveInviteCodes();
 
     const addressInfo = this.httpServer.address();
     const localPort = addressInfo && typeof addressInfo === 'object' ? (addressInfo as any).port : 8080;
@@ -272,6 +326,8 @@ export class GameServer {
     console.log(`Match ${matchId} created with team size ${teamSize}`);
     console.log(`Team 1 invite: ${team1InviteCode}`);
     console.log(`Team 2 invite: ${team2InviteCode}`);
+    console.log(`Total invite codes now: ${this.inviteCodes.size}`);
+    console.log(`Available invite codes: ${Array.from(this.inviteCodes.keys()).join(', ')}`);
   }
 
   private generateInviteCode(): string {
@@ -320,18 +376,15 @@ export class GameServer {
     const playerId = providedPlayerId || this.playerService.generateAnonymousId();
     const playerName = providedName || this.playerService.generateRandomName();
     
-    // Check if playerId is already active in a STARTED match (allow joining waiting matches)
+    // Check if playerId is already active in any match
     if (providedPlayerId && this.activePlayers.has(playerId)) {
-      // Find if the player is in an active/started match
-      const activeMatch = this.findPlayerActiveMatch(playerId);
-      if (activeMatch && activeMatch.status !== 'waiting') {
-        return { 
-          success: false, 
-          error: 'You are already in an active match. Please finish that game first or reconnect to it.' 
-        };
+      // Find if the player is in any match (active or waiting)
+      const existingMatch = this.findPlayerMatch(playerId);
+      if (existingMatch) {
+        // Always prefer the new match - remove player from existing match
+        this.removePlayerFromMatch(playerId, existingMatch);
+        console.log(`Removed player ${playerId} from existing match ${existingMatch.id} to join new match`);
       }
-      // If player is only in waiting matches, allow them to join this new match
-      // (they'll be removed from previous waiting matches)
     }
 
     // Create new player
@@ -412,16 +465,95 @@ export class GameServer {
     return null;
   }
 
+  // Helper method to find any match a player is in (regardless of status)
+  private findPlayerMatch(playerId: string): Match | null {
+    for (const [matchId, match] of this.matches) {
+      if (match.players.has(playerId)) {
+        return match;
+      }
+    }
+    return null;
+  }
+
+  // Helper method to remove a player from a specific match
+  private removePlayerFromMatch(playerId: string, match: Match): void {
+    const player = match.players.get(playerId);
+    if (!player) return;
+
+    // Close existing WebSocket connection if connected
+    if (player.ws && player.connected) {
+      try {
+        player.ws.close();
+      } catch (error) {
+        console.error(`Error closing WebSocket for player ${playerId}:`, error);
+      }
+    }
+
+    // Remove player from match
+    match.players.delete(playerId);
+    this.activePlayers.delete(playerId);
+
+    // Clean up disconnection timers and reconnection counters
+    const timer = this.disconnectionTimers.get(playerId);
+    if (timer) {
+      clearTimeout(timer);
+      this.disconnectionTimers.delete(playerId);
+    }
+    this.reconnectionCounters.delete(playerId);
+
+    // If match becomes empty, clean it up
+    if (match.players.size === 0) {
+      this.cleanupEmptyMatch(match);
+    } else {
+      // Notify remaining players about the player leaving
+      this.notifyPlayerLeft(match, player);
+    }
+
+    console.log(`Player ${playerId} removed from match ${match.id}`);
+  }
+
+  // Helper method to clean up an empty match
+  private cleanupEmptyMatch(match: Match): void {
+    // Clean up invite codes
+    if (match.inviteCodes) {
+      this.inviteCodes.delete(match.inviteCodes.team1);
+      this.inviteCodes.delete(match.inviteCodes.team2);
+      this.saveInviteCodes();
+    }
+
+    // Clean up round evaluator
+    this.roundEvaluators.delete(match.id);
+
+    // Remove match from matches map
+    this.matches.delete(match.id);
+
+    console.log(`Cleaned up empty match ${match.id}`);
+  }
+
+  // Helper method to notify remaining players about a player leaving
+  private notifyPlayerLeft(match: Match, leftPlayer: Player): void {
+    const playerInfo = this.createPlayerInfo(leftPlayer, match);
+    const matchSummary = this.createMatchSummary(match);
+
+    // Notify remaining players
+    Array.from(match.players.values()).forEach(p => {
+      if (p.ws && p.connected) {
+        const playerLeftPayload = {
+          player: playerInfo,
+          match: matchSummary,
+          reason: 'joined_another_match'
+        };
+        const playerLeftMessage = MessageBuilder.createMessage(MessageType.PLAYER_LEFT, playerLeftPayload);
+        p.ws.send(JSON.stringify(playerLeftMessage));
+      }
+    });
+  }
+
   // Helper method to remove player from all waiting matches
   private removePlayerFromWaitingMatches(playerId: string): void {
     for (const [matchId, match] of this.matches) {
       if (match.status === 'waiting' && match.players.has(playerId)) {
-        const player = match.players.get(playerId);
-        if (player) {
-          match.players.delete(playerId);
-          this.activePlayers.delete(playerId);
-          console.log(`Removed player ${playerId} from waiting match ${matchId}`);
-        }
+        this.removePlayerFromMatch(playerId, match);
       }
     }
   }
@@ -559,6 +691,9 @@ export class GameServer {
       case MessageType.GET_STATE_REQUEST:
         this.handleGetGameState(ws);
         break;
+      case MessageType.EXIT_GAME_REQUEST:
+        this.handleExitGame(ws, payload);
+        break;
       default:
         const errorMessage = MessageBuilder.createError('UNKNOWN_MESSAGE_TYPE', 'Unknown message type');
         ws.send(JSON.stringify(errorMessage));
@@ -593,6 +728,149 @@ export class GameServer {
     const gameState = this.createGameState(match, playerId);
     const gameStateMessage = MessageBuilder.createGameStateUpdate(gameState);
     ws.send(JSON.stringify(gameStateMessage));
+  }
+
+  private handleExitGame(ws: GameWebSocket, payload: any) {
+    const matchId = ws.matchId;
+    const playerId = ws.playerId;
+    
+    if (!matchId || !playerId) {
+      const errorMessage = MessageBuilder.createError('INVALID_STATE', 'Invalid connection state');
+      ws.send(JSON.stringify(errorMessage));
+      return;
+    }
+
+    const match = this.matches.get(matchId);
+    if (!match) {
+      const errorMessage = MessageBuilder.createError('MATCH_NOT_FOUND', 'Match not found');
+      ws.send(JSON.stringify(errorMessage));
+      return;
+    }
+
+    const player = match.players.get(playerId);
+    if (!player) {
+      const errorMessage = MessageBuilder.createError('PLAYER_NOT_FOUND', 'Player not in match');
+      ws.send(JSON.stringify(errorMessage));
+      return;
+    }
+
+    console.log(`Player ${player.name} (${playerId}) requested to exit game intentionally`, {
+      reason: payload.reason,
+      message: payload.message
+    });
+
+    // Send confirmation to the exiting player
+    const exitConfirmation = MessageBuilder.createMessage(MessageType.SUCCESS, {
+      action: 'exit_game',
+      message: 'You have successfully exited the game',
+      data: { matchId, playerId }
+    });
+    ws.send(JSON.stringify(exitConfirmation));
+
+    // Handle intentional exit
+    this.handleIntentionalPlayerExit(player, match, payload.reason || 'intentional_exit', payload.message);
+  }
+
+  private handleIntentionalPlayerExit(player: Player, match: Match, reason: string, message?: string) {
+    const playerInfo = this.createPlayerInfo(player, match);
+    const matchSummary = this.createMatchSummary(match);
+
+    // Close the WebSocket connection
+    if (player.ws) {
+      try {
+        player.ws.close(1000, 'Player exited game intentionally');
+      } catch (error) {
+        console.error(`Error closing WebSocket for exiting player ${player.id}:`, error);
+      }
+    }
+
+    // Remove player from match
+    match.players.delete(player.id);
+    this.activePlayers.delete(player.id);
+
+    // Clean up disconnection timers and reconnection counters
+    const timer = this.disconnectionTimers.get(player.id);
+    if (timer) {
+      clearTimeout(timer);
+      this.disconnectionTimers.delete(player.id);
+    }
+    this.reconnectionCounters.delete(player.id);
+
+    // Broadcast player exited message to remaining players
+    const playerExitedPayload: PlayerExitedPayload = {
+      player: playerInfo,
+      match: matchSummary,
+      reason: reason,
+      message: message
+    };
+    const playerExitedMessage = MessageBuilder.createMessage(MessageType.PLAYER_EXITED, playerExitedPayload);
+    this.notificationService.broadcastToMatch(match, playerExitedMessage);
+
+    // Handle match state based on current status
+    if (match.status === 'waiting') {
+      // Match hasn't started yet - just make slot available
+      console.log(`Player ${player.name} (${player.id}) exited from waiting match ${match.id} - slot available`);
+      
+      // If match becomes empty, clean it up
+      if (match.players.size === 0) {
+        this.cleanupEmptyMatch(match);
+      }
+    } else if (match.status === 'active' || match.status === 'paused') {
+      // Match has started - cancel the match
+      this.cancelMatch(match, playerInfo, reason, message);
+    }
+
+    console.log(`Player ${player.name} (${player.id}) intentionally exited from match ${match.id}`);
+  }
+
+  private cancelMatch(match: Match, cancelledBy: PlayerInfo, reason: string, message?: string) {
+    // Set match status to cancelled
+    match.status = 'cancelled';
+
+    // Clean up round evaluator
+    this.roundEvaluators.delete(match.id);
+
+    // Broadcast match cancelled message to all remaining players
+    const matchCancelledPayload: MatchCancelledPayload = {
+      cancelledBy: cancelledBy,
+      reason: reason,
+      message: message
+    };
+    const matchCancelledMessage = MessageBuilder.createMessage(MessageType.MATCH_CANCELLED, matchCancelledPayload);
+
+    // Send cancellation message to all remaining players
+    Array.from(match.players.values()).forEach(p => {
+      if (p.ws && p.connected) {
+        p.ws.send(JSON.stringify(matchCancelledMessage));
+      }
+    });
+
+    // Clean up - remove all players from active set and clean up timers/counters
+    for (const playerId of match.players.keys()) {
+      this.activePlayers.delete(playerId);
+      
+      // Clean up disconnection timers
+      const timer = this.disconnectionTimers.get(playerId);
+      if (timer) {
+        clearTimeout(timer);
+        this.disconnectionTimers.delete(playerId);
+      }
+      
+      // Clean up reconnection counters
+      this.reconnectionCounters.delete(playerId);
+    }
+
+    // Clean up invite codes
+    if (match.inviteCodes) {
+      this.inviteCodes.delete(match.inviteCodes.team1);
+      this.inviteCodes.delete(match.inviteCodes.team2);
+      this.saveInviteCodes();
+    }
+
+    // Remove match from matches map
+    this.matches.delete(match.id);
+
+    console.log(`Match ${match.id} cancelled due to player exit. Reason: ${reason}`);
   }
 
   private handlePlayCard(ws: GameWebSocket, payload: any) {
@@ -811,6 +1089,7 @@ export class GameServer {
     if (match.inviteCodes) {
       this.inviteCodes.delete(match.inviteCodes.team1);
       this.inviteCodes.delete(match.inviteCodes.team2);
+      this.saveInviteCodes();
     }
 
     console.log(`Match ${match.id} completed. Winner: ${winnerTeamId} with ${match.teamScores[winnerTeamId]} points`);
@@ -1013,6 +1292,8 @@ export class GameServer {
       activeMatches: Array.from(this.matches.values()).filter(m => m.status === 'active').length,
       waitingMatches: Array.from(this.matches.values()).filter(m => m.status === 'waiting').length,
       pausedMatches: Array.from(this.matches.values()).filter(m => m.status === 'paused').length,
+      completedMatches: Array.from(this.matches.values()).filter(m => m.status === 'completed').length,
+      cancelledMatches: Array.from(this.matches.values()).filter(m => m.status === 'cancelled').length,
       activePlayers: this.activePlayers.size,
       activeInviteCodes: this.inviteCodes.size
     };
@@ -1063,6 +1344,8 @@ export class GameServer {
 
     if (expiredMatches.length > 0) {
       console.log(`Cleaned up ${expiredMatches.length} expired matches`);
+      // Save invite codes after cleanup
+      this.saveInviteCodes();
     }
 
     return expiredMatches.length;

@@ -83,7 +83,7 @@ export interface Match {
   id: string;
   players: Map<string, Player>;
   teamSize: number;
-  status: 'waiting' | 'active' | 'paused' | 'completed';
+  status: 'waiting' | 'active' | 'paused' | 'completed' | 'cancelled';
   playground: PlayedCard[];
   roundWins: { team1: number, team2: number };
   teamScores: { team1: number, team2: number };
@@ -132,6 +132,7 @@ export enum MessageType {
   PLAYER_LEFT = 'player_left',
   PLAYER_DISCONNECTED = 'player_disconnected',
   PLAYER_RECONNECTED = 'player_reconnected',
+  PLAYER_EXITED = 'player_exited',
   
   // Match Lifecycle
   MATCH_CREATED = 'match_created',
@@ -139,6 +140,7 @@ export enum MessageType {
   MATCH_PAUSED = 'match_paused',
   MATCH_RESUMED = 'match_resumed',
   MATCH_ENDED = 'match_ended',
+  MATCH_CANCELLED = 'match_cancelled',
   
   // Game State
   GAME_STATE_UPDATE = 'game_state_update',
@@ -153,6 +155,7 @@ export enum MessageType {
   // Client Requests
   PLAY_CARD_REQUEST = 'play_card_request',
   GET_STATE_REQUEST = 'get_state_request',
+  EXIT_GAME_REQUEST = 'exit_game_request',
   
   // System
   ERROR = 'error',
@@ -296,6 +299,13 @@ export interface PlayerDisconnectedPayload {
   };
 }
 
+export interface PlayerExitedPayload {
+  player: PlayerInfo;
+  match: MatchSummary;
+  reason: string;
+  message?: string;
+}
+
 // Match Events
 export interface MatchStartedPayload {
   gameState: GameState;
@@ -313,6 +323,12 @@ export interface MatchPausedPayload {
 export interface MatchResumedPayload {
   resumedBy: PlayerInfo;
   gameState: GameState;
+}
+
+export interface MatchCancelledPayload {
+  cancelledBy: PlayerInfo;
+  reason: string;
+  message?: string;
 }
 
 // Gameplay Events
@@ -354,6 +370,11 @@ export interface PlayCardRequestPayload {
 export interface GetStateRequestPayload {
   includeHistory?: boolean;
   since?: string; // ISO timestamp
+}
+
+export interface ExitGameRequestPayload {
+  reason?: string;
+  message?: string;
 }
 
 // System Messages
