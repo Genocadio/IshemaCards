@@ -1,8 +1,9 @@
 import { WebSocket, Server as WebSocketServer } from 'ws';
 import { createServer, Server as HttpServer, IncomingMessage, ServerResponse } from 'http';
-import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as https from 'https';
+import * as http from 'http';
 import { 
   Match, 
   Player, 
@@ -58,6 +59,9 @@ export class GameServer {
   
   // Persistence
   private readonly PERSISTENCE_FILE = path.join(process.cwd(), 'invite-codes.json');
+  
+  // Backend API configuration
+  private readonly BACKEND_API_URL = process.env.BACKEND_API_URL || 'https://admin.hporwanda.org/api/games/create/';
 
   constructor(port: number = 8080) {
     this.httpServer = createServer(this.handleHttpRequest.bind(this));
@@ -234,15 +238,15 @@ export class GameServer {
       req.on('data', chunk => {
         body += chunk.toString();
       });
-      req.on('end', () => {
-        try {
-          const { teamSize = 2 } = JSON.parse(body);
-          this.handleCreateMatchHttp(req, res, Number(teamSize));
-        } catch (error) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid request body' }));
-        }
-      });
+             req.on('end', () => {
+         try {
+           const { teamSize = 2 } = JSON.parse(body);
+           this.handleCreateMatchHttp(req, res, Number(teamSize));
+         } catch (error) {
+           res.writeHead(400, { 'Content-Type': 'application/json' });
+           res.end(JSON.stringify({ error: 'Invalid request body' }));
+         }
+       });
     } else if (req.method === 'GET' && req.url === '/health') {
       // Health check endpoint
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -265,69 +269,136 @@ export class GameServer {
       return;
     }
 
-    const matchId = uuidv4();
-    // Generate shorter, more user-friendly invite codes
-    const team1InviteCode = this.generateInviteCode();
-    const team2InviteCode = this.generateInviteCode();
+    // Calculate participant count (team size * 2 teams)
+    const participantCount = teamSize * 2;
 
-    const match: Match = {
-      id: matchId,
-      players: new Map(),
-      teamSize,
-      status: 'waiting',
-      playground: [],
-      roundWins: { team1: 0, team2: 0 },
-      teamScores: { team1: 0, team2: 0 },
-      trumpSuit: 'Spades',  // Will be set when match starts
-      createdAt: new Date(),
-      inviteCodes: {
-        team1: team1InviteCode,
-        team2: team2InviteCode
-      }
-    };
+    // Make request to backend API to create match
+    this.createMatchInBackend(participantCount)
+      .then(backendResponse => {
+        const matchId = backendResponse.game.match_id;
+        
+        // Generate shorter, more user-friendly invite codes
+        const team1InviteCode = this.generateInviteCode();
+        const team2InviteCode = this.generateInviteCode();
 
-    this.matches.set(matchId, match);
-    this.inviteCodes.set(team1InviteCode, { matchId, teamId: 'team1' });
-    this.inviteCodes.set(team2InviteCode, { matchId, teamId: 'team2' });
-    
-    // Persist invite codes
-    this.saveInviteCodes();
+        const match: Match = {
+          id: matchId,
+          players: new Map(),
+          teamSize,
+          status: 'waiting',
+          playground: [],
+          roundWins: { team1: 0, team2: 0 },
+          teamScores: { team1: 0, team2: 0 },
+          trumpSuit: 'Spades',  // Will be set when match starts
+          createdAt: new Date(backendResponse.game.created_at),
+          inviteCodes: {
+            team1: team1InviteCode,
+            team2: team2InviteCode
+          }
+        };
 
-    const addressInfo = this.httpServer.address();
-    const localPort = addressInfo && typeof addressInfo === 'object' ? (addressInfo as any).port : 8080;
-    // Build external host and protocol from forwarded headers when behind proxy (e.g., Render)
-    const forwardedProto = (req.headers['x-forwarded-proto'] as string) || undefined;
-    const forwardedHost = (req.headers['x-forwarded-host'] as string) || undefined;
-    const hostHeader = req.headers.host || `localhost:${localPort}`;
-    const externalProto = forwardedProto || (hostHeader.toString().startsWith('localhost') ? 'ws' : 'ws');
-    const externalHost = forwardedHost || hostHeader;
-    const wsScheme = externalProto === 'https' ? 'wss' : (externalProto === 'http' ? 'ws' : externalProto);
+        this.matches.set(matchId, match);
+        this.inviteCodes.set(team1InviteCode, { matchId, teamId: 'team1' });
+        this.inviteCodes.set(team2InviteCode, { matchId, teamId: 'team2' });
+        
+        // Persist invite codes
+        this.saveInviteCodes();
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      matchId,
-      teamSize,
-      team1: {
-        inviteCode: team1InviteCode,
-        wsUrl: `${wsScheme}://${externalHost}/invite/${team1InviteCode}`,
-        joinUrl: `${wsScheme}://${externalHost}/invite/${team1InviteCode}?name=YourName`
-      },
-      team2: {
-        inviteCode: team2InviteCode,
-        wsUrl: `${wsScheme}://${externalHost}/invite/${team2InviteCode}`,
-        joinUrl: `${wsScheme}://${externalHost}/invite/${team2InviteCode}?name=YourName`
-      },
-      info: {
-        message: 'Share the appropriate team invite URL with players',
-        optionalParams: 'Add ?playerId=yourId&name=yourName to reconnect with existing identity'
-      }
-    }));
+        const addressInfo = this.httpServer.address();
+        const localPort = addressInfo && typeof addressInfo === 'object' ? (addressInfo as any).port : 8080;
+        // Build external host and protocol from forwarded headers when behind proxy (e.g., Render)
+        const forwardedProto = (req.headers['x-forwarded-proto'] as string) || undefined;
+        const forwardedHost = (req.headers['x-forwarded-host'] as string) || undefined;
+        const hostHeader = req.headers.host || `localhost:${localPort}`;
+        const externalProto = forwardedProto || (hostHeader.toString().startsWith('localhost') ? 'ws' : 'ws');
+        const externalHost = forwardedHost || hostHeader;
+        const wsScheme = externalProto === 'https' ? 'wss' : (externalProto === 'http' ? 'ws' : externalProto);
 
-    console.log(`Match ${matchId} created with team size ${teamSize}`);
-    console.log(`Team 1 invite: ${team1InviteCode}`);
-    console.log(`Team 2 invite: ${team2InviteCode}`);
-    console.log(`Total invite codes now: ${this.inviteCodes.size}`);
-    console.log(`Available invite codes: ${Array.from(this.inviteCodes.keys()).join(', ')}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          matchId,
+          teamSize,
+          team1: {
+            inviteCode: team1InviteCode,
+            wsUrl: `${wsScheme}://${externalHost}/invite/${team1InviteCode}`,
+            joinUrl: `${wsScheme}://${externalHost}/invite/${team1InviteCode}?name=YourName`
+          },
+          team2: {
+            inviteCode: team2InviteCode,
+            wsUrl: `${wsScheme}://${externalHost}/invite/${team2InviteCode}`,
+            joinUrl: `${wsScheme}://${externalHost}/invite/${team2InviteCode}?name=YourName`
+          },
+          info: {
+            message: 'Share the appropriate team invite URL with players',
+            optionalParams: 'Add ?playerId=yourId&name=yourName to reconnect with existing identity'
+          }
+        }));
+
+        console.log(`Match ${matchId} created with team size ${teamSize} (${participantCount} participants)`);
+        console.log(`Team 1 invite: ${team1InviteCode}`);
+        console.log(`Team 2 invite: ${team2InviteCode}`);
+        console.log(`Total invite codes now: ${this.inviteCodes.size}`);
+        console.log(`Available invite codes: ${Array.from(this.inviteCodes.keys()).join(', ')}`);
+      })
+      .catch(error => {
+        console.error('Error creating match in backend:', error);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          error: 'Failed to create match in backend',
+          details: error.message 
+        }));
+      });
+  }
+
+  private async createMatchInBackend(participantCount: number): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const postData = JSON.stringify({
+        participant_count: participantCount
+      });
+
+      const url = new URL(this.BACKEND_API_URL);
+      const isHttps = url.protocol === 'https:';
+      const httpModule = isHttps ? https : http;
+
+      const options = {
+        hostname: url.hostname,
+        port: url.port || (isHttps ? 443 : 80),
+        path: url.pathname,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(postData)
+        }
+      };
+
+      const req = httpModule.request(options, (res) => {
+        let data = '';
+
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+
+        res.on('end', () => {
+          try {
+            const response = JSON.parse(data);
+            if (res.statusCode === 200 && response.success) {
+              resolve(response);
+            } else {
+              reject(new Error(`Backend API error: ${response.error || 'Unknown error'}`));
+            }
+          } catch (error) {
+            reject(new Error(`Failed to parse backend response: ${error.message}`));
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        reject(new Error(`Backend API request failed: ${error.message}`));
+      });
+
+      req.write(postData);
+      req.end();
+    });
   }
 
   private generateInviteCode(): string {
