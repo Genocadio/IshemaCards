@@ -1033,6 +1033,13 @@ export class GameServer {
   }
 
   private completeRound(match: Match) {
+    // Check if this is the last round (no players have cards after this round)
+    const anyPlayerHasCards = Array.from(match.players.values()).some(p => p.hand.length > 0);
+    const isLastRound = !anyPlayerHasCards;
+    
+    // Use 3 seconds delay for the last round, 1 second for other rounds
+    const delay = isLastRound ? 3000 : 1000;
+    
     setTimeout(() => {
       const roundEvaluator = this.roundEvaluators.get(match.id);
       if (!roundEvaluator) {
@@ -1105,15 +1112,13 @@ export class GameServer {
       });
 
       // Check if the game is complete (i.e., players have no more cards)
-      const anyPlayerHasCards = Array.from(match.players.values()).some(p => p.hand.length > 0);
-      
       if (!anyPlayerHasCards) {
         this.completeMatch(match);
       } else {
         // If the game continues, explicitly notify clients about the turn change.
         this.notifyTurnChange(match);
       }
-    }, 1000);
+    }, delay);
   }
 
   private completeMatch(match: Match) {
